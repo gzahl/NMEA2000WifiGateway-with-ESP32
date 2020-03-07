@@ -18,13 +18,14 @@
 #define ESP32_CAN_RX_PIN GPIO_NUM_4  // Set CAN RX port to 4
 
 #include <Arduino.h>
-#include <NMEA2000_CAN.h>  // This will automatically choose right CAN library and create suitable NMEA2000 object
+#include <NMEA2000_CAN.h>  // This will automatically choose u right CAN library and create suitable NMEA2000 object
 #include <Seasmart.h>
 #include <memory>
 #include <N2kMessages.h>
 #include <NMEA0183Messages.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <Wire.h>
 #include <OneWire.h>
 #include <OneButton.h>
 #include <DallasTemperature.h>
@@ -36,15 +37,17 @@
 #include "BoatData.h"
 
 
-#define ENABLE_DEBUG_LOG 0 // Debug log, set to 1 to enable AIS forward on USB-Serial / 2 for ADC voltage to support calibration
+#define ENABLE_DEBUG_LOG 1 // Debug log, set to 1 to enable AIS forward on USB-Serial / 2 for ADC voltage to support calibration
 #define UDP_Forwarding 1   // Set to 1 for forwarding AIS from serial2 to UDP brodcast
 #define HighTempAlarm 12   // Alarm level for fridge temperature (higher)
 #define LowVoltageAlarm 11 // Alarm level for battery voltage (lower)
 
 #define ADC_Calibration_Value 34.3 // The real value depends on the true resistor values for the ADC input (100K / 27 K)
 
+static const uint8_t GPS_I2C_ADDR = 0x42; // 7 bit Wire/I2C address for u-blox
+
 // Wifi AP
-const char *ssid = "MyESP32";
+const char *ssid = "Svala";
 const char *password = "8641009916";
 
 // Put IP address details here
@@ -83,6 +86,8 @@ using tWiFiClientPtr = std::shared_ptr<WiFiClient>;
 LinkedList<tWiFiClientPtr> clients;
 
 tN2kDataToNMEA0183 tN2kDataToNMEA0183(&NMEA2000, 0);
+
+TwoWire twoWire(0);
 
 // Set the information for other bus devices, which messages we support
 const unsigned long TransmitMessages[] PROGMEM = {127489L, // Engine dynamic
@@ -239,7 +244,6 @@ void SendN2kEngine() {
   }
 }
 
-
 //*****************************************************************************
 void AddClient(WiFiClient &client) {
   Serial.println("New Client.");
@@ -349,6 +353,8 @@ void handle_json() {
   client.stop();
 }
 
+
+
 int i=0;
 int j=0;
 
@@ -366,8 +372,28 @@ void loop() {
     }
     Serial.println(txtbuff);
   }*/
+  
+  /*
+  delay(1);
+  int cnt = twoWire.requestFrom(GPS_I2C_ADDR, (uint8_t) 32);    // request 6 bytes from slave device #2
+
+  //if(cnt != 32)
+  //  Serial.println(cnt);
+
+  while(twoWire.available())    // slave may send less than requested
+  {
+    char c = twoWire.read();    // receive a byte as character
+    if(isascii(c)) {
+      Serial.print(c);         // print the character
+    }
+    
+  }*/
+
+  //delay(50);
 
 
+  delay(1);
+  twoWire.requestFrom(GPS_I2C_ADDR, (uint8_t) 32);
   if (NMEA0183.GetMessage(NMEA0183Msg)) {  // Get AIS NMEA sentences from serial2
 
     SendNMEA0183Message(NMEA0183Msg);      // Send to TCP clients
@@ -391,7 +417,7 @@ void loop() {
             j=0;
           }
         }
-    } 
+    }
     
 
     NMEA0183Msg.GetMessage(buff, MAX_NMEA0183_MESSAGE_SIZE); // send to buffer
@@ -453,6 +479,39 @@ void GetTemperature( void * parameter) {
 }
 
 
+void scanI2C() {
+  byte error, address;
+  int nDevices;
+  Serial.println("Scanning...");
+  nDevices = 0;
+  for(address = 1; address < 127; address++ ) {
+    twoWire.beginTransmission(address);
+    error = twoWire.endTransmission();
+    if (error == 0) {
+      Serial.print("I2C device found at address 0x");
+      if (address<16) {
+        Serial.print("0");
+      }
+      Serial.println(address,HEX);
+      nDevices++;
+    }
+    else if (error==4) {
+      Serial.print("Unknow error at address 0x");
+      if (address<16) {
+        Serial.print("0");
+      }
+      Serial.println(address,HEX);
+    }    
+  }
+  if (nDevices == 0) {
+    Serial.println("No I2C devices found\n");
+  }
+  else {
+    Serial.println("done\n");
+  }
+  delay(5000);          
+}
+
 void setup() {
   
   uint8_t chipid[6];
@@ -467,9 +526,14 @@ void setup() {
   // Init USB serial port
   Serial.begin(115200);
 
+
+  twoWire.begin();
+
   // Init AIS serial port 2
   Serial2.begin(baudrate, rs_config);
-  NMEA0183.Begin(&Serial2, 3, baudrate);
+  NMEA0183.SetMessageStream(&twoWire);
+  NMEA0183.Open();
+  //NMEA0183.Begin(&Serial2, 3, baudrate);
 
 
   // Init wifi connection
@@ -539,6 +603,9 @@ void setup() {
 
   NMEA2000.Open();
 
+  //twoWire.beginTransmission(GPS_I2C_ADDR);
+  //twoWire.onReceive(onReceiveGPS);
+
   // Create task for core 0, loop() runs on core 1
   xTaskCreatePinnedToCore(
     GetTemperature, /* Function to implement the task */
@@ -550,4 +617,7 @@ void setup() {
     0); /* Core where the task should run */
 
   delay(200);
+
+  //scanI2C();
 }
+
